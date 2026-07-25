@@ -141,7 +141,7 @@ jobs:
           set -euo pipefail
           docker run --rm -v "$PWD:/pkg" archlinux:base-devel bash -lc '
             set -euo pipefail
-            pacman -Syu --noconfirm --needed bun git rustup gcc-libs glibc icu zlib
+            pacman -Syu --noconfirm --needed bun clang cmake git rustup gcc-libs glibc icu zlib
 
             host_uid=$(stat -c %u /pkg)
             host_gid=$(stat -c %g /pkg)

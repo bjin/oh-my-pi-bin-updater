@@ -44,7 +44,27 @@ jobs:
           EOF
 
       - name: Clone AUR package
-        run: git clone ssh://aur@aur.archlinux.org/oh-my-pi-bin.git aur
+        run: |
+          set -euo pipefail
+          clone_root=$(mktemp -d)
+          clone_destination="$clone_root/aur"
+          trap 'rm -rf "$clone_root"' EXIT
+          max_clone_attempts=4
+          clone_attempt=1
+          while ! git clone ssh://aur@aur.archlinux.org/oh-my-pi-bin.git "$clone_destination"; do
+            if [ "$clone_attempt" -ge "$max_clone_attempts" ]; then
+              echo "git clone failed after ${clone_attempt} attempts." >&2
+              exit 1
+            fi
+            rm -rf "$clone_destination"
+            backoff_seconds=$((2 ** (clone_attempt - 1)))
+            echo "git clone failed; retrying in ${backoff_seconds}s (attempt $((clone_attempt + 1))/${max_clone_attempts})." >&2
+            sleep "$backoff_seconds"
+            clone_attempt=$((clone_attempt + 1))
+          done
+          mv "$clone_destination" aur
+          rmdir "$clone_root"
+          trap - EXIT
 
       - name: Update PKGBUILD and .SRCINFO
         id: update
@@ -287,7 +307,27 @@ jobs:
           EOF
 
       - name: Clone AUR package
-        run: git clone ssh://aur@aur.archlinux.org/oh-my-pi-bin.git aur
+        run: |
+          set -euo pipefail
+          clone_root=$(mktemp -d)
+          clone_destination="$clone_root/aur"
+          trap 'rm -rf "$clone_root"' EXIT
+          max_clone_attempts=4
+          clone_attempt=1
+          while ! git clone ssh://aur@aur.archlinux.org/oh-my-pi-bin.git "$clone_destination"; do
+            if [ "$clone_attempt" -ge "$max_clone_attempts" ]; then
+              echo "git clone failed after ${clone_attempt} attempts." >&2
+              exit 1
+            fi
+            rm -rf "$clone_destination"
+            backoff_seconds=$((2 ** (clone_attempt - 1)))
+            echo "git clone failed; retrying in ${backoff_seconds}s (attempt $((clone_attempt + 1))/${max_clone_attempts})." >&2
+            sleep "$backoff_seconds"
+            clone_attempt=$((clone_attempt + 1))
+          done
+          mv "$clone_destination" aur
+          rmdir "$clone_root"
+          trap - EXIT
 
       - name: Download package metadata
         uses: actions/download-artifact@v4

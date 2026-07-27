@@ -310,4 +310,15 @@ jobs:
           git config user.email 'bjin@protonmail.com'
           git add PKGBUILD .SRCINFO
           git commit -m "upstream release: ${VERSION}"
-          git push origin master
+          max_push_attempts=4
+          push_attempt=1
+          while ! git push origin master; do
+            if [ "$push_attempt" -ge "$max_push_attempts" ]; then
+              echo "git push failed after ${push_attempt} attempts." >&2
+              exit 1
+            fi
+            backoff_seconds=$((2 ** (push_attempt - 1)))
+            echo "git push failed; retrying in ${backoff_seconds}s (attempt $((push_attempt + 1))/${max_push_attempts})." >&2
+            sleep "$backoff_seconds"
+            push_attempt=$((push_attempt + 1))
+          done

@@ -141,7 +141,7 @@ jobs:
           set -euo pipefail
           docker run --rm -v "$PWD:/pkg" archlinux:base-devel bash -lc '
             set -euo pipefail
-            pacman -Syu --noconfirm --needed bun clang cmake git rustup gcc-libs glibc icu zlib
+            pacman -Syu --noconfirm
 
             host_uid=$(stat -c %u /pkg)
             host_gid=$(stat -c %g /pkg)
@@ -160,10 +160,17 @@ jobs:
             builder_home=$(getent passwd "$builder" | cut -d: -f6)
             install -d -o "$host_uid" -g "$host_gid" "$builder_home"
 
+            # makepkg --syncdeps installs the PKGBUILD depends/makedepends
+            # through "sudo -k pacman", which must not prompt for a password.
+            printf "%s ALL=(root) NOPASSWD: /usr/bin/pacman\n" "$builder" \
+              > /etc/sudoers.d/makepkg-syncdeps
+            chmod 440 /etc/sudoers.d/makepkg-syncdeps
+            visudo -cqf /etc/sudoers.d/makepkg-syncdeps
+
             su "$builder" -s /usr/bin/bash <<'"'"'EOSU'"'"'
             set -euo pipefail
             cd /pkg
-            makepkg
+            makepkg --syncdeps --noconfirm
             makepkg --printsrcinfo >.SRCINFO
 
             runtime_dir=$(mktemp -d)

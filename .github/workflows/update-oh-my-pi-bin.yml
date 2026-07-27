@@ -219,6 +219,11 @@ jobs:
             set -euo pipefail
             pacman -Syu --noconfirm
             useradd -m builder
+            # makepkg -s installs the PKGBUILD depends/makedepends through
+            # "sudo -k pacman", which must not prompt for a password.
+            echo "builder ALL=(root) NOPASSWD: /usr/bin/pacman" > /etc/sudoers.d/makepkg-syncdeps
+            chmod 440 /etc/sudoers.d/makepkg-syncdeps
+            visudo -cqf /etc/sudoers.d/makepkg-syncdeps
             chown -R builder:builder /pkg
             cd /pkg
             su builder -c "makepkg -Csf --noconfirm"

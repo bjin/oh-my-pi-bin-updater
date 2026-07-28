@@ -73,9 +73,11 @@ jobs:
           rmdir "$clone_root"
           trap - EXIT
 
-      - name: Check upstream version and update PKGBUILD
+      - name: Plan package update and release
         id: update
         working-directory: aur
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -106,6 +108,13 @@ jobs:
             exit 1
           fi
 
+          current_pkgrel=$(awk -F= '/^pkgrel=/{ print $2; exit }' PKGBUILD)
+          current_pkgrel="${current_pkgrel//[[:space:]]/}"
+          if [ -z "$current_pkgrel" ]; then
+            echo "Unable to read pkgrel from PKGBUILD." >&2
+            exit 1
+          fi
+
           echo "version=$latest_version" >> "$GITHUB_OUTPUT"
           current_is_current_or_newer=$(
             python3 - "$current_version" "$latest_version" <<'PY'
@@ -116,46 +125,97 @@ jobs:
           print("true" if current >= latest else "false")
           PY
           )
-          if [ "$current_is_current_or_newer" = true ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No update needed: current package $current_version, latest upstream $latest_version"
+          if [ "$current_is_current_or_newer" = false ]; then
+            pkgbuild_tmp=$(mktemp)
+            trap 'rm -f "$pkgbuild_tmp"' EXIT
+            if ! awk -v latest_version="$latest_version" '
+              BEGIN {
+                updated_pkgver = 0
+                updated_pkgrel = 0
+              }
+              /^pkgver=/ && !updated_pkgver {
+                print "pkgver=" latest_version
+                updated_pkgver = 1
+                next
+              }
+              /^pkgrel=/ && !updated_pkgrel {
+                print "pkgrel=1"
+                updated_pkgrel = 1
+                next
+              }
+              {
+                print
+              }
+              END {
+                exit((updated_pkgver && updated_pkgrel) ? 0 : 1)
+              }
+            ' PKGBUILD > "$pkgbuild_tmp"; then
+              echo "Unable to update pkgver and pkgrel in PKGBUILD." >&2
+              exit 1
+            fi
+            mv "$pkgbuild_tmp" PKGBUILD
+
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "bump=true" >> "$GITHUB_OUTPUT"
+            echo "Updated: $current_version -> $latest_version"
             exit 0
           fi
 
-          pkgbuild_tmp=$(mktemp)
-          trap 'rm -f "$pkgbuild_tmp"' EXIT
-          if ! awk -v latest_version="$latest_version" '
-            BEGIN {
-              updated_pkgver = 0
-              updated_pkgrel = 0
-            }
-            /^pkgver=/ && !updated_pkgver {
-              print "pkgver=" latest_version
-              updated_pkgver = 1
-              next
-            }
-            /^pkgrel=/ && !updated_pkgrel {
-              print "pkgrel=1"
-              updated_pkgrel = 1
-              next
-            }
-            {
-              print
-            }
-            END {
-              exit((updated_pkgver && updated_pkgrel) ? 0 : 1)
-            }
-          ' PKGBUILD > "$pkgbuild_tmp"; then
-            echo "Unable to update pkgver and pkgrel in PKGBUILD." >&2
+          package_asset="oh-my-pi-${current_version}-${current_pkgrel}-x86_64.pkg.tar.zst"
+          release_response=$(mktemp)
+          release_error=$(mktemp)
+          trap 'rm -f "$release_response" "$release_error"' EXIT
+          if gh api --include \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/oh-my-pi" \
+              > "$release_response" 2> "$release_error"; then
+            package_published=$(
+              python3 - "$release_response" "$package_asset" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          response = Path(sys.argv[1]).read_bytes()
+          for separator in (b"\r\n\r\n", b"\n\n"):
+              if separator in response:
+                  _, body = response.split(separator, 1)
+                  break
+          else:
+              raise SystemExit("GitHub release response is missing a body")
+
+          release = json.loads(body)
+          assets = release.get("assets")
+          if not isinstance(assets, list):
+              raise SystemExit("GitHub release response is missing an assets list")
+
+          asset_name = sys.argv[2]
+          print(
+              "true"
+              if any(asset.get("name") == asset_name for asset in assets)
+              else "false"
+          )
+          PY
+            )
+          elif grep -Eq '^HTTP/[0-9.]+ 404 ' "$release_response"; then
+            package_published=false
+          else
+            cat "$release_error" >&2
+            cat "$release_response" >&2
+            echo "Unable to query GitHub release oh-my-pi." >&2
             exit 1
           fi
-          mv "$pkgbuild_tmp" PKGBUILD
 
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "Updated: $current_version -> $latest_version"
+          if [ "$package_published" = true ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "No update needed: current package $current_version-$current_pkgrel is published."
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "Building current package: $package_asset is not published."
+          fi
 
       - name: Build and smoke test package
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outputs.build == 'true'
         working-directory: aur
         run: |
           set -euo pipefail
@@ -207,7 +267,7 @@ jobs:
           '
 
       - name: Record built package
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outputs.build == 'true'
         id: package
         working-directory: aur
         run: |
@@ -222,7 +282,7 @@ jobs:
           echo "filename=${packages[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Commit and push to AUR
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outputs.bump == 'true'
         working-directory: aur
         env:
           VERSION: ${{ steps.update.outputs.version }}
@@ -253,7 +313,7 @@ jobs:
           done
 
       - name: Publish signed pacman repository
-        if: steps.update.outputs.changed == 'true'
+        if: steps.update.outputs.build == 'true'
         env:
           ARCH_REPO_GPG_PRIVATE_KEY: ${{ secrets.ARCH_REPO_GPG_PRIVATE_KEY }}
           GH_TOKEN: ${{ github.token }}

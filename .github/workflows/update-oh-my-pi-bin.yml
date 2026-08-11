@@ -83,7 +83,6 @@ jobs:
           import urllib.error
           import urllib.request
 
-          ASSET_NAME = "omp-linux-x64"
           RELEASE_URL = "https://api.github.com/repos/can1357/oh-my-pi/releases/latest"
           MAX_FETCH_ATTEMPTS = 4
           MAX_FETCH_RETRY_SECONDS = 300
@@ -138,21 +137,27 @@ jobs:
           def version_tuple(value):
               return tuple(int(part) for part in value.split("."))
 
-          def asset_sha256(assets):
+          def asset_sha256(assets, asset_name):
               for asset in assets:
-                  if asset.get("name") != ASSET_NAME:
+                  if asset.get("name") != asset_name:
                       continue
                   digest = asset.get("digest") or ""
                   if not digest:
-                      raise SystemExit(f"Asset {ASSET_NAME} has no digest")
+                      raise SystemExit(f"Asset {asset_name} has no digest")
                   return digest[7:] if digest.startswith("sha256:") else digest
-              raise SystemExit(f"Asset {ASSET_NAME} not found")
+              raise SystemExit(f"Asset {asset_name} not found")
 
-          def format_sha256sums(values):
-              return "\n".join([
-                  f"sha256sums=('{values[0]}'",
-                  f"            '{values[1]}')",
-              ])
+          def replace_sha256sum(content, name, checksum):
+              content, replaced = re.subn(
+                  rf"^{re.escape(name)}=\('[0-9a-f]+'\)$",
+                  f"{name}=('{checksum}')",
+                  content,
+                  count=1,
+                  flags=re.MULTILINE,
+              )
+              if replaced != 1:
+                  raise SystemExit(f"Could not find {name} checksum line in PKGBUILD")
+              return content
 
           content = open("PKGBUILD", encoding="utf-8").read()
           match = re.search(r"^pkgver=(\S+)", content, re.MULTILINE)
@@ -175,20 +180,21 @@ jobs:
               print(f"already up to date: {current}")
               sys.exit(0)
 
-          binary_sha = asset_sha256(release.get("assets", []))
+          assets = release.get("assets", [])
+          x86_64_binary_sha = asset_sha256(assets, "omp-linux-x64")
+          aarch64_binary_sha = asset_sha256(assets, "omp-linux-arm64")
           license_bytes = fetch_bytes(f"https://raw.githubusercontent.com/can1357/oh-my-pi/v{latest}/LICENSE")
           license_sha = hashlib.sha256(license_bytes).hexdigest()
 
           content = re.sub(r"^pkgver=\S+", f"pkgver={latest}", content, flags=re.MULTILINE)
           content = re.sub(r"^pkgrel=\S+", "pkgrel=1", content, flags=re.MULTILINE)
-          content, replaced = re.subn(
-              r"sha256sums=\((?:\s*'[0-9a-f]+'\s*)+\)",
-              format_sha256sums([binary_sha, license_sha]),
-              content,
-              count=1,
+          content = replace_sha256sum(content, "sha256sums", license_sha)
+          content = replace_sha256sum(
+              content, "sha256sums_x86_64", x86_64_binary_sha
           )
-          if replaced != 1:
-              raise SystemExit("Could not find sha256sums array in PKGBUILD")
+          content = replace_sha256sum(
+              content, "sha256sums_aarch64", aarch64_binary_sha
+          )
           open("PKGBUILD", "w", encoding="utf-8").write(content)
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
